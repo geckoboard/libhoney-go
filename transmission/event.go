@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -40,15 +41,16 @@ func (e *Event) MarshalJSON() ([]byte, error) {
 
 func (e *Event) MarshalMsgpack() ([]byte, error) {
 	var buf bytes.Buffer
-	if err := e.encodeMsgpack(newMsgpackEncoder(&buf)); err != nil {
+	var keys []string
+	if err := e.encodeMsgpack(newMsgpackEncoder(&buf), &keys); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
 // encodeMsgpack writes the event's wire msgpack to enc, so that a whole batch
-// can share one encoder and buffer.
-func (e *Event) encodeMsgpack(enc *msgpack.Encoder) (err error) {
+// can share one encoder, buffer and slice for sorting keys.
+func (e *Event) encodeMsgpack(enc *msgpack.Encoder, keys *[]string) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("msgpack panic: %v, trying to encode: %#v", p, e)
@@ -71,7 +73,7 @@ func (e *Event) encodeMsgpack(enc *msgpack.Encoder) (err error) {
 	if err := enc.EncodeString("data"); err != nil {
 		return err
 	}
-	if err := enc.EncodeMapSorted(e.Data); err != nil {
+	if err := encodeSortedMap(enc, e.Data, keys); err != nil {
 		return err
 	}
 	if hasSampleRate {
@@ -100,4 +102,29 @@ func newMsgpackEncoder(w io.Writer) *msgpack.Encoder {
 	enc.SetCustomStructTag("json")
 	enc.SetSortMapKeys(true)
 	return enc
+}
+
+// encodeSortedMap writes m with its keys in sorted order, so that similar
+// events encode alike and compress well together.
+func encodeSortedMap(enc *msgpack.Encoder, m map[string]interface{}, keys *[]string) error {
+	if m == nil {
+		return enc.EncodeNil()
+	}
+	*keys = (*keys)[:0]
+	for k := range m {
+		*keys = append(*keys, k)
+	}
+	slices.Sort(*keys)
+	if err := enc.EncodeMapLen(len(*keys)); err != nil {
+		return err
+	}
+	for _, k := range *keys {
+		if err := enc.EncodeString(k); err != nil {
+			return err
+		}
+		if err := enc.Encode(m[k]); err != nil {
+			return err
+		}
+	}
+	return nil
 }

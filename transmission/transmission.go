@@ -661,9 +661,10 @@ func (b *batchAgg) encodeBatchMsgp(events []*Event, buf *bytes.Buffer) ([]byte, 
 	buf.Write(arrayHeader[:])
 	// events are encoded straight into buf, and cut back off it if rejected
 	enc := newMsgpackEncoder(buf)
+	var keys []string
 	for i, ev := range events {
 		start := buf.Len()
-		err := ev.encodeMsgpack(enc)
+		err := ev.encodeMsgpack(enc, &keys)
 		if err != nil {
 			buf.Truncate(start)
 			b.enqueueResponse(Response{
