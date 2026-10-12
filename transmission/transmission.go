@@ -370,24 +370,25 @@ func (b *batchAgg) fireBatch(events []*Event) {
 		return
 	}
 
+	var buf *bytes.Buffer
+	if b.disableCompression {
+		// uncompressed, the buffer is the request body, which the HTTP client
+		// may still be reading after the request returns
+		buf = new(bytes.Buffer)
+	} else {
+		buf = batchBufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		defer batchBufferPool.Put(buf)
+	}
+
 	var numEncoded int
 	var encEvs []byte
 	var contentType string
 	if b.enableMsgpackEncoding {
 		contentType = "application/msgpack"
-		encEvs, numEncoded = b.encodeBatchMsgp(events)
+		encEvs, numEncoded = b.encodeBatchMsgp(events, buf)
 	} else {
 		contentType = "application/json"
-		var buf *bytes.Buffer
-		if b.disableCompression {
-			// uncompressed, the buffer is the request body, which the HTTP
-			// client may still be reading after the request returns
-			buf = new(bytes.Buffer)
-		} else {
-			buf = batchBufferPool.Get().(*bytes.Buffer)
-			buf.Reset()
-			defer batchBufferPool.Put(buf)
-		}
 		encEvs, numEncoded = b.encodeBatchJSON(events, buf)
 	}
 	// if we failed to encode any events skip this batch
@@ -646,7 +647,7 @@ func (b *batchAgg) encodeBatchJSON(events []*Event, buf *bytes.Buffer) ([]byte, 
 	return buf.Bytes(), numEncoded
 }
 
-func (b *batchAgg) encodeBatchMsgp(events []*Event) ([]byte, int) {
+func (b *batchAgg) encodeBatchMsgp(events []*Event, buf *bytes.Buffer) ([]byte, int) {
 	// Msgpack arrays need to be prefixed with the number of elements, but we
 	// don't know in advance how many we'll encode, because the msgpack lib
 	// doesn't do size estimation. Also, the array header is of variable size
@@ -655,13 +656,17 @@ func (b *batchAgg) encodeBatchMsgp(events []*Event) ([]byte, int) {
 
 	var arrayHeader [5]byte
 	var numEncoded int
-	var buf bytes.Buffer
 
 	// Prepend space for largest possible msgpack array header.
 	buf.Write(arrayHeader[:])
+	// events are encoded straight into buf, and cut back off it if rejected
+	enc := newMsgpackEncoder(buf)
+	var keys []string
 	for i, ev := range events {
-		evByt, err := msgpack.Marshal(ev)
+		start := buf.Len()
+		err := ev.encodeMsgpack(enc, &keys)
 		if err != nil {
+			buf.Truncate(start)
 			b.enqueueResponse(Response{
 				Err:      err,
 				Metadata: ev.Metadata,
@@ -672,7 +677,8 @@ func (b *batchAgg) encodeBatchMsgp(events []*Event) ([]byte, int) {
 			continue
 		}
 		// if the event is too large to ever send, add an error to the queue
-		if len(evByt) > apiEventSizeMax {
+		if buf.Len()-start > apiEventSizeMax {
+			buf.Truncate(start)
 			// if this event happens to have a `name` or `service.name` field, include them for easier debugging
 			extraInfo := getExceedsMaxEventSizeExtraInfo(ev)
 			// log the error and enqueue a response
@@ -684,17 +690,18 @@ func (b *batchAgg) encodeBatchMsgp(events []*Event) ([]byte, int) {
 			continue
 		}
 
-		if buf.Len()+len(evByt) > apiMaxBatchSize {
+		if buf.Len() > apiMaxBatchSize {
+			buf.Truncate(start)
 			b.reenqueueEvents(events[i:])
 			break
 		}
 
-		buf.Write(evByt)
 		numEncoded++
 	}
 
 	headerBuf := bytes.NewBuffer(arrayHeader[:0])
-	msgpack.NewEncoder(headerBuf).EncodeArrayLen(numEncoded)
+	enc.ResetWriter(headerBuf)
+	enc.EncodeArrayLen(numEncoded)
 
 	// Shenanigans. Chop off leading bytes we don't need, then copy in header.
 	byts := buf.Bytes()[len(arrayHeader)-headerBuf.Len():]
@@ -717,8 +724,8 @@ func (b *batchAgg) enqueueErrResponses(err error, events []*Event, duration time
 
 var zstdBufferPool sync.Pool
 
-// batchBufferPool recycles JSON batch buffers, which would otherwise be
-// regrown from empty for every batch.
+// batchBufferPool recycles batch buffers, which would otherwise be regrown
+// from empty for every batch.
 var batchBufferPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
 
 type pooledReader struct {
