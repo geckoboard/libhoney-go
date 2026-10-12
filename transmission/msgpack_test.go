@@ -49,7 +49,8 @@ func TestEncodeBatchMsgpDropsRejectedEvents(t *testing.T) {
 		{Data: map[string]any{"n": 3}},
 	}
 
-	enc, n := b.encodeBatchMsgp(events)
+	var buf bytes.Buffer
+	enc, n := b.encodeBatchMsgp(events, &buf)
 	testEquals(t, n, 3)
 
 	var decoded []map[string]any
@@ -84,8 +85,10 @@ func BenchmarkEncodeBatchMsgp(b *testing.B) {
 	b.Run("encodeBatchMsgp", func(b *testing.B) {
 		b.ReportAllocs()
 		agg := &batchAgg{}
+		var buf bytes.Buffer
 		for b.Loop() {
-			agg.encodeBatchMsgp(events)
+			buf.Reset()
+			agg.encodeBatchMsgp(events, &buf)
 		}
 	})
 }
