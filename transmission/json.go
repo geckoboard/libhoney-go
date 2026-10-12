@@ -2,6 +2,7 @@ package transmission
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"slices"
 	"strconv"
@@ -13,37 +14,39 @@ import (
 // encoding/json's output, but handles the common field types directly: going
 // through json.Marshal costs reflection per field and re-validates the output
 // of every MarshalJSON method it calls, which dominates batch encoding time.
-func (e *Event) appendJSON(b []byte) ([]byte, error) {
+func (e *Event) appendJSON(b []byte, keys *[]string) ([]byte, error) {
 	b = append(b, `{"data":`...)
-	b = appendData(b, e.Data)
+	b = appendData(b, e.Data, keys)
 	// don't include sample rate if it's 1; this is the default
 	if e.SampleRate > 1 {
 		b = append(b, `,"samplerate":`...)
 		b = strconv.AppendUint(b, uint64(e.SampleRate), 10)
 	}
 	if !e.Timestamp.IsZero() {
-		t, err := e.Timestamp.MarshalJSON()
-		if err != nil {
+		var err error
+		b = append(b, `,"time":"`...)
+		// errors as Time.MarshalJSON would, for times RFC 3339 can't represent
+		if b, err = e.Timestamp.AppendText(b); err != nil {
 			return nil, err
 		}
-		b = append(b, `,"time":`...)
-		b = append(b, t...)
+		b = append(b, '"')
 	}
 	return append(b, '}'), nil
 }
 
 // appendData writes fields in sorted key order, omitting any that are nil or
-// can't be marshalled rather than failing the whole event.
-func appendData(b []byte, data map[string]any) []byte {
-	keys := make([]string, 0, len(data))
+// can't be marshalled rather than failing the whole event. keys is reused
+// across events for sorting.
+func appendData(b []byte, data map[string]any, keys *[]string) []byte {
+	*keys = (*keys)[:0]
 	for k := range data {
-		keys = append(keys, k)
+		*keys = append(*keys, k)
 	}
-	slices.Sort(keys)
+	slices.Sort(*keys)
 
 	b = append(b, '{')
 	first := true
-	for _, k := range keys {
+	for _, k := range *keys {
 		start := len(b)
 		if !first {
 			b = append(b, ',')
@@ -114,6 +117,10 @@ func appendFast(b []byte, v any) ([]byte, bool) {
 		return strconv.AppendUint(b, x, 10), true
 	case time.Duration:
 		return strconv.AppendInt(b, int64(x), 10), true
+	case float64:
+		return appendFloat(b, x, 64)
+	case float32:
+		return appendFloat(b, float64(x), 32)
 	case []string:
 		if x == nil {
 			return b, false
@@ -154,6 +161,15 @@ func appendSlice(b []byte, s []any) ([]byte, bool) {
 		}
 	}
 	return append(b, ']'), true
+}
+
+// appendFloat omits NaN and infinities, which JSON can't represent, as
+// encoding/json does.
+func appendFloat(b []byte, f float64, bits int) ([]byte, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return b, false
+	}
+	return strconv.AppendFloat(b, f, 'g', -1, bits), true
 }
 
 // appendString skips encoding/json's HTML escaping, as events aren't embedded

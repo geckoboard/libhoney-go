@@ -6,6 +6,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -91,8 +92,9 @@ func BenchmarkEventJSON(b *testing.B) {
 	b.Run("appendJSON", func(b *testing.B) {
 		b.ReportAllocs()
 		var buf []byte
+		var keys []string
 		for b.Loop() {
-			buf, _ = ev.appendJSON(buf[:0])
+			buf, _ = ev.appendJSON(buf[:0], &keys)
 		}
 	})
 }
@@ -120,8 +122,10 @@ func BenchmarkEncodeBatchJSON(b *testing.B) {
 	b.Run("encodeBatchJSON", func(b *testing.B) {
 		b.ReportAllocs()
 		agg := &batchAgg{}
+		var buf bytes.Buffer
 		for b.Loop() {
-			agg.encodeBatchJSON(events)
+			buf.Reset()
+			agg.encodeBatchJSON(events, &buf)
 		}
 	})
 }
@@ -136,6 +140,28 @@ func decodeJSON(t *testing.T, b []byte) any {
 	var v any
 	if err := dec.Decode(&v); err != nil {
 		t.Fatalf("invalid JSON %s: %v", b, err)
+	}
+	return normalizeNumbers(v)
+}
+
+// normalizeNumbers compares integers exactly, by their text, and other numbers
+// by value, as they can be written in more than one form.
+func normalizeNumbers(v any) any {
+	switch x := v.(type) {
+	case json.Number:
+		if !strings.ContainsAny(string(x), ".eE") {
+			return x
+		}
+		f, _ := x.Float64()
+		return f
+	case map[string]any:
+		for k, e := range x {
+			x[k] = normalizeNumbers(e)
+		}
+	case []any:
+		for i, e := range x {
+			x[i] = normalizeNumbers(e)
+		}
 	}
 	return v
 }
