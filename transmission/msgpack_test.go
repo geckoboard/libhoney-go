@@ -2,6 +2,7 @@ package transmission
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +37,32 @@ func TestEventMsgpackIsEquivalentToStructEncoding(t *testing.T) {
 			testEquals(t, decodeMsgpack(t, got), decodeMsgpack(t, want))
 		})
 	}
+}
+
+func TestEncodeBatchMsgpDropsRejectedEvents(t *testing.T) {
+	b := &batchAgg{responses: make(chan Response, 2), metrics: &nullMetrics{}}
+	events := []*Event{
+		{Data: map[string]any{"n": 1}},
+		{Data: map[string]any{"bad": make(chan int)}, Metadata: "bad"},
+		{Data: map[string]any{"n": 2}},
+		{Data: map[string]any{"big": strings.Repeat("x", apiEventSizeMax)}, Metadata: "big"},
+		{Data: map[string]any{"n": 3}},
+	}
+
+	enc, n := b.encodeBatchMsgp(events)
+	testEquals(t, n, 3)
+
+	var decoded []map[string]any
+	testOK(t, msgpack.Unmarshal(enc, &decoded))
+	testEquals(t, len(decoded), 3)
+	for i, ev := range decoded {
+		testEquals(t, ev["data"], map[string]any{"n": int8(i + 1)})
+	}
+	if events[1] != nil || events[3] != nil {
+		t.Error("expected rejected events to be nilled out")
+	}
+	testEquals(t, (<-b.responses).Metadata, "bad")
+	testEquals(t, (<-b.responses).Metadata, "big")
 }
 
 func BenchmarkEncodeBatchMsgp(b *testing.B) {

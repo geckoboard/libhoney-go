@@ -46,7 +46,8 @@ func (e *Event) MarshalMsgpack() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// encodeMsgpack writes the event's wire msgpack to enc.
+// encodeMsgpack writes the event's wire msgpack to enc, so that a whole batch
+// can share one encoder and buffer.
 func (e *Event) encodeMsgpack(enc *msgpack.Encoder) (err error) {
 	defer func() {
 		if p := recover(); p != nil {

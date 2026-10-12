@@ -659,9 +659,13 @@ func (b *batchAgg) encodeBatchMsgp(events []*Event) ([]byte, int) {
 
 	// Prepend space for largest possible msgpack array header.
 	buf.Write(arrayHeader[:])
+	// events are encoded straight into buf, and cut back off it if rejected
+	enc := newMsgpackEncoder(&buf)
 	for i, ev := range events {
-		evByt, err := msgpack.Marshal(ev)
+		start := buf.Len()
+		err := ev.encodeMsgpack(enc)
 		if err != nil {
+			buf.Truncate(start)
 			b.enqueueResponse(Response{
 				Err:      err,
 				Metadata: ev.Metadata,
@@ -672,7 +676,8 @@ func (b *batchAgg) encodeBatchMsgp(events []*Event) ([]byte, int) {
 			continue
 		}
 		// if the event is too large to ever send, add an error to the queue
-		if len(evByt) > apiEventSizeMax {
+		if buf.Len()-start > apiEventSizeMax {
+			buf.Truncate(start)
 			// if this event happens to have a `name` or `service.name` field, include them for easier debugging
 			extraInfo := getExceedsMaxEventSizeExtraInfo(ev)
 			// log the error and enqueue a response
@@ -684,17 +689,18 @@ func (b *batchAgg) encodeBatchMsgp(events []*Event) ([]byte, int) {
 			continue
 		}
 
-		if buf.Len()+len(evByt) > apiMaxBatchSize {
+		if buf.Len() > apiMaxBatchSize {
+			buf.Truncate(start)
 			b.reenqueueEvents(events[i:])
 			break
 		}
 
-		buf.Write(evByt)
 		numEncoded++
 	}
 
 	headerBuf := bytes.NewBuffer(arrayHeader[:0])
-	msgpack.NewEncoder(headerBuf).EncodeArrayLen(numEncoded)
+	enc.ResetWriter(headerBuf)
+	enc.EncodeArrayLen(numEncoded)
 
 	// Shenanigans. Chop off leading bytes we don't need, then copy in header.
 	byts := buf.Bytes()[len(arrayHeader)-headerBuf.Len():]
