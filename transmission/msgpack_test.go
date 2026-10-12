@@ -39,6 +39,20 @@ func TestEventMsgpackIsEquivalentToStructEncoding(t *testing.T) {
 	}
 }
 
+func TestEventMsgpackIsDeterministic(t *testing.T) {
+	ev := exampleSpan()
+	ev.Data["nested"] = map[string]any{"a": 1, "b": 2, "c": 3, "d": 4}
+	first, err := ev.MarshalMsgpack()
+	testOK(t, err)
+	for range 20 {
+		again, err := ev.MarshalMsgpack()
+		testOK(t, err)
+		if !bytes.Equal(again, first) {
+			t.Fatal("expected the same event to always encode to the same bytes")
+		}
+	}
+}
+
 func TestEncodeBatchMsgpDropsRejectedEvents(t *testing.T) {
 	b := &batchAgg{responses: make(chan Response, 2), metrics: &nullMetrics{}}
 	events := []*Event{

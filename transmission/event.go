@@ -71,7 +71,7 @@ func (e *Event) encodeMsgpack(enc *msgpack.Encoder) (err error) {
 	if err := enc.EncodeString("data"); err != nil {
 		return err
 	}
-	if err := enc.EncodeMap(e.Data); err != nil {
+	if err := enc.EncodeMapSorted(e.Data); err != nil {
 		return err
 	}
 	if hasSampleRate {
@@ -93,8 +93,11 @@ func (e *Event) encodeMsgpack(enc *msgpack.Encoder) (err error) {
 	return nil
 }
 
+// newMsgpackEncoder sorts map keys so that similar events encode alike, which
+// lets them compress well together.
 func newMsgpackEncoder(w io.Writer) *msgpack.Encoder {
 	enc := msgpack.NewEncoder(w)
 	enc.SetCustomStructTag("json")
+	enc.SetSortMapKeys(true)
 	return enc
 }
